@@ -1,0 +1,173 @@
+name: Android Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_tv_version:
+        description: '是否同时构建 TV 版本'
+        required: false
+        default: 'true'
+        type: boolean
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # 签出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 设置 Java 环境
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      # 设置 Flutter 环境
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.x'
+          cache: true
+
+      # 检查是否有签名密钥配置
+      - name: Check keystore configuration
+        id: check_keystore
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ] && [ -n "${{ secrets.STORE_PASSWORD }}" ] && [ -n "${{ secrets.KEY_PASSWORD }}" ] && [ -n "${{ secrets.KEY_ALIAS }}" ]; then
+            echo "has_keystore=true" >> $GITHUB_OUTPUT
+            echo "✅ 检测到完整的签名配置，将构建已签名 APK"
+          else
+            echo "has_keystore=false" >> $GITHUB_OUTPUT
+            echo "⚠️  未检测到完整的签名配置，将构建未签名 APK"
+          fi
+
+      # 配置 Android 签名（仅在有完整配置时执行）
+      - name: Configure Android signing
+        if: steps.check_keystore.outputs.has_keystore == 'true'
+        run: |
+          # 创建 keystore 文件
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+          
+          # 创建签名配置文件
+          cat > simple_live_app/android/key.properties << EOF
+          storeFile=../../../keystore.jks
+          storePassword=${{ secrets.STORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          EOF
+          
+          echo "✅ Android 签名配置完成"
+
+      # 安装依赖 - simple_live_core
+      - name: Install dependencies (simple_live_core)
+        run: |
+          cd simple_live_core
+          flutter pub get
+
+      # 安装依赖 - simple_live_app
+      - name: Install dependencies (simple_live_app)
+        run: |
+          cd simple_live_app
+          flutter pub get
+
+      # 安装依赖 - simple_live_tv_app（如果需要构建 TV 版本）
+      - name: Install dependencies (simple_live_tv_app)
+        if: github.event.inputs.build_tv_version == 'true'
+        run: |
+          cd simple_live_tv_app
+          flutter pub get
+
+      # 构建 Android APK - simple_live_app
+      - name: Build Android APK (simple_live_app)
+        run: |
+          cd simple_live_app
+          echo "开始构建 simple_live_app APK..."
+          flutter build apk --release --split-per-abi
+          echo "✅ simple_live_app APK 构建完成"
+
+      # 构建 Android APK - simple_live_tv_app（如果启用）
+      - name: Build Android APK (simple_live_tv_app)
+        if: github.event.inputs.build_tv_version == 'true'
+        run: |
+          cd simple_live_tv_app
+          echo "开始构建 simple_live_tv_app APK..."
+          flutter build apk --release --split-per-abi
+          echo "✅ simple_live_tv_app APK 构建完成"
+
+      # 重命名 APK 文件以便区分
+      - name: Rename APK files
+        run: |
+          mkdir -p apk_output
+          
+          # 重命名 simple_live_app APK
+          if [ -f "simple_live_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk" ]; then
+            cp "simple_live_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk" "apk_output/simple_live_app-arm64-v8a-release.apk"
+          fi
+          
+          if [ -f "simple_live_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk" ]; then
+            cp "simple_live_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk" "apk_output/simple_live_app-armeabi-v7a-release.apk"
+          fi
+          
+          if [ -f "simple_live_app/build/app/outputs/flutter-apk/app-x86_64-release.apk" ]; then
+            cp "simple_live_app/build/app/outputs/flutter-apk/app-x86_64-release.apk" "apk_output/simple_live_app-x86_64-release.apk"
+          fi
+          
+          # 重命名 simple_live_tv_app APK（如果存在）
+          if [ "${{ github.event.inputs.build_tv_version }}" == "true" ]; then
+            if [ -f "simple_live_tv_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk" ]; then
+              cp "simple_live_tv_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk" "apk_output/simple_live_tv_app-arm64-v8a-release.apk"
+            fi
+            
+            if [ -f "simple_live_tv_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk" ]; then
+              cp "simple_live_tv_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk" "apk_output/simple_live_tv_app-armeabi-v7a-release.apk"
+            fi
+            
+            if [ -f "simple_live_tv_app/build/app/outputs/flutter-apk/app-x86_64-release.apk" ]; then
+              cp "simple_live_tv_app/build/app/outputs/flutter-apk/app-x86_64-release.apk" "apk_output/simple_live_tv_app-x86_64-release.apk"
+            fi
+          fi
+          
+          # 显示构建结果
+          echo "📱 构建完成的 APK 文件："
+          ls -la apk_output/
+
+      # 上传 APK 到 Artifacts
+      - name: Upload APK to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks-${{ github.run_number }}
+          path: apk_output/*.apk
+          retention-days: 30
+
+      # 构建摘要
+      - name: Build Summary
+        run: |
+          echo "## 🎉 Android 构建完成！" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📱 构建配置" >> $GITHUB_STEP_SUMMARY
+          echo "- **Flutter 版本**: 3.22.x" >> $GITHUB_STEP_SUMMARY
+          echo "- **Java 版本**: 17" >> $GITHUB_STEP_SUMMARY
+          echo "- **构建类型**: Release" >> $GITHUB_STEP_SUMMARY
+          echo "- **签名状态**: ${{ steps.check_keystore.outputs.has_keystore == 'true' && '✅ 已签名' || '⚠️ 未签名' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **TV 版本**: ${{ github.event.inputs.build_tv_version == 'true' && '✅ 已构建' || '❌ 跳过' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 构建产物" >> $GITHUB_STEP_SUMMARY
+          echo "APK 文件已上传到 Artifacts，文件名：\`android-apks-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🏗️ 支持的架构" >> $GITHUB_STEP_SUMMARY
+          echo "- arm64-v8a (64位 ARM)" >> $GITHUB_STEP_SUMMARY
+          echo "- armeabi-v7a (32位 ARM)" >> $GITHUB_STEP_SUMMARY
+          echo "- x86_64 (64位 x86)" >> $GITHUB_STEP_SUMMARY
+
+      # 清理密钥文件
+      - name: Cleanup keystore
+        if: always() && steps.check_keystore.outputs.has_keystore == 'true'
+        run: |
+          rm -f keystore.jks
+          rm -f simple_live_app/android/key.properties
+          echo "🧹 清理完成"
