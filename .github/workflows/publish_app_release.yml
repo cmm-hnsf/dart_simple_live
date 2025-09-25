@@ -1,9 +1,16 @@
 name: app-build-action
 #推送Tag时触发
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      release_notes:
+        description: 'Release notes'
+        required: false
+        default: 'Manual release'
 jobs:
   build-mac-ios-android:
     runs-on: macos-latest
